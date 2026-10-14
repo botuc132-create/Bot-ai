@@ -19,7 +19,7 @@ log = logging.getLogger("bot")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free").strip()
 ALLOW_PAID = os.getenv("ALLOW_PAID_MODEL", "false").lower() == "true"
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "20"))
 USER_COOLDOWN = float(os.getenv("USER_COOLDOWN_SECONDS", "2"))
