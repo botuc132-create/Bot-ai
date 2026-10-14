@@ -1,5 +1,6 @@
 """Telegram AI study assistant using OpenRouter (polling mode)."""
 import asyncio
+import base64
 import logging
 import os
 import sys
@@ -19,7 +20,7 @@ log = logging.getLogger("bot")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-31b-it:free").strip()
+OPENROUTER_MODEL = (os.getenv("OPENROUTER_MODEL") or "").strip().strip("\"'") or "google/gemma-4-31b-it:free"
 ALLOW_PAID = os.getenv("ALLOW_PAID_MODEL", "false").lower() == "true"
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "20"))
 USER_COOLDOWN = float(os.getenv("USER_COOLDOWN_SECONDS", "2"))
@@ -191,8 +192,55 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_long(update, answer)
 
 
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not msg.photo:
+        return
+    chat_id = update.effective_chat.id
+    caption = (msg.caption or "Hãy đọc và giải thích nội dung trong ảnh này.").strip()
+    now = time.monotonic()
+    if now - last_call.get(chat_id, 0) < USER_COOLDOWN or locks[chat_id].locked():
+        await msg.reply_text("⏱ Bạn gửi hơi nhanh, đợi mình trả lời xong câu trước nhé.")
+        return
+    last_call[chat_id] = now
+    async with locks[chat_id]:
+        try:
+            await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        except TelegramError:
+            pass
+        try:
+            photo = msg.photo[-1]  # ảnh độ phân giải cao nhất
+            tg_file = await context.bot.get_file(photo.file_id)
+            buf = await tg_file.download_as_bytearray()
+            if len(buf) > 10 * 1024 * 1024:
+                await msg.reply_text("📏 Ảnh quá lớn (tối đa 10MB). Bạn gửi ảnh nhỏ hơn nhé.")
+                return
+            b64 = base64.b64encode(bytes(buf)).decode()
+        except (TelegramError, httpx.HTTPError) as e:
+            log.warning("Không tải được ảnh từ Telegram: %s", type(e).__name__)
+            await msg.reply_text("📥 Không tải được ảnh. Bạn gửi lại thử nhé.")
+            return
+        hist = histories[chat_id]
+        user_content = [
+            {"type": "text", "text": caption},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+        ]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, *hist,
+                    {"role": "user", "content": user_content}]
+        try:
+            answer = await ask_ai(messages)
+        except AIError as e:
+            await msg.reply_text(e.user_msg)
+            return
+        # Lịch sử chỉ lưu dạng văn bản để tiết kiệm token
+        hist.append({"role": "user", "content": f"[Người dùng gửi 1 ảnh] {caption}"})
+        hist.append({"role": "assistant", "content": answer})
+        await send_long(update, answer)
+
+
 async def on_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("📝 Hiện mình chỉ đọc được tin nhắn văn bản. Bạn gõ câu hỏi nhé!")
+    await update.effective_message.reply_text("📝 Mình đọc được văn bản và ảnh. Bạn gõ câu hỏi hoặc gửi ảnh nhé!")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -231,6 +279,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, on_photo))
     app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL, on_other))
     app.add_error_handler(on_error)
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
